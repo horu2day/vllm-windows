@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "name": "vllm-windows",
+            "path": "."
+        },
+        {
+            "name": "sglang-windows",
+            "path": "../sglang-windows"
+        }
+    ],
+    "settings": {}
+}
