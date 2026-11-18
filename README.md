@@ -33,8 +33,9 @@ Open `docker-compose.yml` and replace `<hugging_face_token>` with your own Huggi
    
 Download or copy the desired LLM model weights into the `models` directory within the cloned repository and update the model name.
 ```yaml
-  command: --model /models/Qwen3-4B-Thinking-2507
+  command: --model /models/translategemma-4b-it
 ```
+This repo currently ships a translation setup - see [Serving TranslateGemma](#serving-translategemma) below.
 4. Simply execute the following command at the root level of the project:
 
 ```bash
@@ -75,3 +76,77 @@ vllm:cpu_cache_usage_perc{model_name="/models/mistral-7b"} 0.0
 vllm:gpu_cache_usage_perc{model_name="/models/mistral-7b"} 0.38849487785658
 # HELP vllm:num_requests_running Number of requests that is currently running for inference.
 ```
+
+---
+
+## Serving TranslateGemma
+
+This repo is configured to serve **TranslateGemma 4B**, Google's Gemma 3 based
+translation model (55 languages), and nothing else. Translation itself - web UI,
+REST API, chunking, language detection - lives in the separate
+[translator](../translator) project, which talks to this server over HTTP and
+needs no GPU of its own.
+
+```
+ translator :8080  ──HTTP──▶  vllm-windows :8000
+ Web UI / REST API            model serving (GPU)
+```
+
+### Why this model
+
+On an RTX 3060 12GB:
+
+| Candidate | Size | Fits 12 GB | Note |
+|-----------|------|-----------|------|
+| **translategemma-4b-it (bf16)** | **8.6 GB** | **yes** | in use |
+| translategemma-12b-it (bf16) | 24 GB | no | |
+| translategemma-12b W4A16-GPTQ | ~7 GB | - | the HF repo holds only a README, no weights |
+| translategemma-* FP8 / NVFP4 | - | no | FP8 needs Ada (SM89), NVFP4 needs Blackwell; the 3060 is SM86 |
+| translategemma-12b GGUF Q4 | 7.3 GB | - | llama.cpp only; vLLM's Gemma3 GGUF support is unreliable |
+
+### Get the weights
+
+`google/translategemma-4b-it` is gated (manual approval). The
+[Infomaniak-AI](https://huggingface.co/Infomaniak-AI/vllm-translategemma-4b-it)
+mirror is not, and ships a chat template and RoPE config fixed up for vLLM.
+
+```powershell
+pip install huggingface_hub
+hf download Infomaniak-AI/vllm-translategemma-4b-it `
+  --local-dir .\models\translategemma-4b-it `
+  --include "*.safetensors" "*.json" "*.jinja" "tokenizer.model"
+```
+
+### Run
+
+```powershell
+docker compose up -d
+curl http://127.0.0.1:8000/v1/models
+```
+
+Measured on an RTX 3060 12GB with the shipped flags: 11591 MiB of 12288 MiB used,
+88 prompt tokens for a one-sentence request.
+
+### Prompt format
+
+TranslateGemma does **not** take a normal system prompt - its chat template
+rejects the system role. One user message, formatted like this:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"translategemma","temperature":0,
+       "messages":[{"role":"user",
+         "content":"<<<source>>>ko<<<target>>>en<<<text>>>안녕하세요, 반갑습니다."}]}'
+```
+
+The [translator](../translator) project handles this, plus source-language
+detection and marker sanitisation. Use it rather than calling this endpoint
+directly.
+
+### Switching back to a general-purpose model
+
+`docker-compose.yml` keeps the previous Qwen3-4B-Thinking command as a comment.
+Swap the two `command:` lines and `docker compose up -d`. The translator picks the
+change up automatically (`MODEL=auto`, `PROMPT_STYLE=auto`) and falls back to a
+system-prompt style suited to general instruct models.

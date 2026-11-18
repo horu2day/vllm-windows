@@ -1,0 +1,54 @@
+# TranslateGemma - local translation service (Web UI + REST API + MCP)
+# Upstream: https://github.com/neosun100/translategemma
+#
+# Tuned for a single RTX 3060 12GB:
+#   translategemma-12b-it Q4_K_M (GGUF, 7.3 GB weights + ~1.5 GB KV cache @ 4096 ctx)
+#
+# Usage:
+#   copy .env.translategemma.example .env.translategemma
+#   pwsh ./scripts/download-translategemma.ps1
+#   docker compose -f docker-compose.translategemma.yml --env-file .env.translategemma up -d
+#
+# NOTE: do NOT run this at the same time as docker-compose.yml (vLLM).
+#       Both want the same GPU and 12 GB is not enough for both.
+
+services:
+  translategemma:
+    image: neosun/translategemma:latest
+    container_name: translategemma
+    ports:
+      - "${PORT:-8022}:8022"
+    environment:
+      # 12b + Q4 -> ~7.3 GB VRAM, the best quality that fits 12 GB
+      - MODEL_NAME=${MODEL_NAME:-12b}
+      - QUANTIZATION=${QUANTIZATION:-4}
+      - BACKEND=${BACKEND:-gguf}
+      # seconds of idle before the model is unloaded from VRAM (0 = unload immediately)
+      - GPU_IDLE_TIMEOUT=${GPU_IDLE_TIMEOUT:-600}
+      # >100 causes truncated translations upstream
+      - MAX_CHUNK_LENGTH=${MAX_CHUNK_LENGTH:-100}
+      - DEFAULT_OVERLAP=${DEFAULT_OVERLAP:-0}
+      - REPETITION_PENALTY=${REPETITION_PENALTY:-1.0}
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://huggingface.co}
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+      - HF_HOME=/app/models
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-0}
+    volumes:
+      # GGUF weights: the app looks for /root/.cache/translate/models/translategemma-<size>-it-Q<bits>.gguf
+      - ./models/translate:/root/.cache/translate/models
+      # HuggingFace cache (used only if the app has to download something itself)
+      - ./models/translate/hf:/app/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8022/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${NVIDIA_VISIBLE_DEVICES:-0}"]
+              capabilities: [gpu]
